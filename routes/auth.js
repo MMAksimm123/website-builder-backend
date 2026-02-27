@@ -7,7 +7,7 @@ const pool = require('../config/db');
 
 const router = express.Router();
 
-// Регистрация
+// Регистрация через email/password
 router.post('/register', [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 6 })
@@ -20,6 +20,7 @@ router.post('/register', [
 
     const { email, password } = req.body;
 
+    // Проверяем только в таблице users (email/password пользователи)
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1',
       [email]
@@ -39,19 +40,30 @@ router.post('/register', [
 
     const user = result.rows[0];
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { 
+        userId: user.id, 
+        email: user.email,
+        userType: 'user' 
+      },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({ user, token });
+    res.json({ 
+      user: { 
+        ...user, 
+        userType: 'user' 
+      }, 
+      token,
+      userType: 'user' 
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Вход
+// Вход через email/password
 router.post('/login', [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
@@ -76,14 +88,23 @@ router.post('/login', [
     }
 
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { 
+        userId: user.id, 
+        email: user.email,
+        userType: 'user' 
+      },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
     res.json({ 
-      user: { id: user.id, email: user.email },
-      token 
+      user: { 
+        id: user.id, 
+        email: user.email,
+        userType: 'user' 
+      }, 
+      token,
+      userType: 'user' 
     });
   } catch (error) {
     console.error(error);
@@ -94,16 +115,43 @@ router.post('/login', [
 // Получение текущего пользователя
 router.get('/me', require('../middleware/auth'), async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT id, email, full_name, avatar_url, created_at FROM users WHERE id = $1',
-      [req.userId]
-    );
+    const { userType, userId } = req.user;
+    
+    if (userType === 'user') {
+      const result = await pool.query(
+        'SELECT id, email, full_name, avatar_url, created_at FROM users WHERE id = $1',
+        [userId]
+      );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      res.json({ 
+        user: { 
+          ...result.rows[0], 
+          userType: 'user' 
+        } 
+      });
+    } else {
+      const result = await pool.query(
+        `SELECT id, provider, provider_id as "providerId", 
+                email, full_name, avatar_url, created_at 
+         FROM oauth_users WHERE id = $1`,
+        [userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      res.json({ 
+        user: { 
+          ...result.rows[0], 
+          userType: 'oauth' 
+        } 
+      });
     }
-
-    res.json({ user: result.rows[0] });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
@@ -124,15 +172,19 @@ router.get('/github/callback',
       console.log('GitHub callback успешен, пользователь:', req.user);
       
       const token = jwt.sign(
-        { userId: req.user.id, email: req.user.email },
+        { 
+          userId: req.user.id, 
+          email: req.user.email,
+          userType: 'oauth' 
+        },
         process.env.JWT_SECRET,
         { expiresIn: '7d' }
       );
 
-      console.log('JWT токен сгенерирован для пользователя:', req.user.id);
+      console.log('JWT токен сгенерирован для oauth пользователя:', req.user.id);
       
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+      res.redirect(`${frontendUrl}/auth/callback?token=${token}&userType=oauth`);
     } catch (error) {
       console.error('GitHub callback error:', error);
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -140,44 +192,5 @@ router.get('/github/callback',
     }
   }
 );
-
-// Получение информации о GitHub аккаунте
-router.get('/github/user/:userId', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT provider_data FROM user_providers 
-       WHERE user_id = $1 AND provider = 'github'`,
-      [req.params.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({ connected: false });
-    }
-
-    res.json({ 
-      connected: true,
-      data: result.rows[0].provider_data 
-    });
-  } catch (error) {
-    console.error('Error fetching GitHub user:', error);
-    res.status(500).json({ error: 'Failed to fetch GitHub info' });
-  }
-});
-
-// Отключение GitHub аккаунта
-router.delete('/github/:userId', async (req, res) => {
-  try {
-    await pool.query(
-      `DELETE FROM user_providers 
-       WHERE user_id = $1 AND provider = 'github'`,
-      [req.params.userId]
-    );
-
-    res.json({ message: 'GitHub account disconnected' });
-  } catch (error) {
-    console.error('Error disconnecting GitHub:', error);
-    res.status(500).json({ error: 'Failed to disconnect GitHub' });
-  }
-});
 
 module.exports = router;

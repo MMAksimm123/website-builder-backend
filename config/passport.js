@@ -4,16 +4,21 @@ const pool = require('./db');
 require('dotenv').config();
 
 passport.serializeUser((user, done) => {
-  done(null, user.id);
+  done(null, { id: user.id, type: 'oauth' });
 });
 
-passport.deserializeUser(async (id, done) => {
+passport.deserializeUser(async (data, done) => {
   try {
-    const result = await pool.query(
-      'SELECT id, email, full_name, avatar_url FROM users WHERE id = $1',
-      [id]
-    );
-    done(null, result.rows[0]);
+    if (data.type === 'oauth') {
+      const result = await pool.query(
+        'SELECT id, provider, email, full_name, avatar_url FROM oauth_users WHERE id = $1',
+        [data.id]
+      );
+      if (result.rows.length > 0) {
+        return done(null, { ...result.rows[0], userType: 'oauth' });
+      }
+    }
+    done(null, null);
   } catch (error) {
     done(error, null);
   }
@@ -32,75 +37,56 @@ passport.use(new GitHubStrategy({
       const email = profile.emails?.[0]?.value || `${profile.username}@github.user`;
       const fullName = profile.displayName || profile.username;
       const avatarUrl = profile.photos?.[0]?.value;
-      const githubId = profile.id.toString();
+      const providerId = profile.id.toString();
 
-      // Проверяем, есть ли пользователь с таким GitHub ID
-      const existingUserByProvider = await pool.query(
-        `SELECT u.* FROM users u 
-         JOIN user_providers up ON u.id = up.user_id 
-         WHERE up.provider = 'github' AND up.provider_id = $1`,
-        [githubId]
+      // Проверяем существование пользователя в oauth_users
+      const existingUser = await pool.query(
+        `SELECT * FROM oauth_users 
+         WHERE provider = 'github' AND provider_id = $1`,
+        [providerId]
       );
 
-      if (existingUserByProvider.rows.length > 0) {
-        // Обновляем информацию о пользователе
+      if (existingUser.rows.length > 0) {
+        // Обновляем существующего пользователя
         await pool.query(
-          `UPDATE users SET 
+          `UPDATE oauth_users SET 
            full_name = COALESCE($1, full_name),
-           avatar_url = COALESCE($2, avatar_url)
-           WHERE id = $3`,
-          [fullName, avatarUrl, existingUserByProvider.rows[0].id]
+           avatar_url = COALESCE($2, avatar_url),
+           provider_data = $3,
+           updated_at = CURRENT_TIMESTAMP
+           WHERE id = $4`,
+          [fullName, avatarUrl, { profile, accessToken }, existingUser.rows[0].id]
         );
 
-        await pool.query(
-          `UPDATE user_providers SET 
-           provider_data = $1
-           WHERE user_id = $2 AND provider = 'github'`,
-          [{ profile, accessToken }, existingUserByProvider.rows[0].id]
-        );
-
-        return done(null, existingUserByProvider.rows[0]);
+        const user = existingUser.rows[0];
+        return done(null, { 
+          id: user.id, 
+          email: user.email,
+          full_name: fullName,
+          avatar_url: avatarUrl,
+          provider: 'github',
+          userType: 'oauth' 
+        });
       }
 
-      // Проверяем, есть ли пользователь с таким email
-      const existingUserByEmail = await pool.query(
-        'SELECT * FROM users WHERE email = $1',
-        [email]
+      // Создаем нового пользователя в oauth_users
+      const newUser = await pool.query(
+        `INSERT INTO oauth_users 
+         (provider, provider_id, email, full_name, avatar_url, provider_data) 
+         VALUES ($1, $2, $3, $4, $5, $6) 
+         RETURNING id, email, full_name, avatar_url`,
+        ['github', providerId, email, fullName, avatarUrl, { profile, accessToken }]
       );
 
-      let userId;
-
-      if (existingUserByEmail.rows.length > 0) {
-        userId = existingUserByEmail.rows[0].id;
-        
-        await pool.query(
-          `UPDATE users SET 
-           full_name = COALESCE($1, full_name),
-           avatar_url = COALESCE($2, avatar_url)
-           WHERE id = $3`,
-          [fullName, avatarUrl, userId]
-        );
-      } else {
-        const newUser = await pool.query(
-          `INSERT INTO users (email, full_name, avatar_url) 
-           VALUES ($1, $2, $3) RETURNING id`,
-          [email, fullName, avatarUrl]
-        );
-        userId = newUser.rows[0].id;
-      }
-
-      await pool.query(
-        `INSERT INTO user_providers (user_id, provider, provider_id, provider_data) 
-         VALUES ($1, 'github', $2, $3)`,
-        [userId, githubId, { profile, accessToken }]
-      );
-
-      const result = await pool.query(
-        'SELECT id, email, full_name, avatar_url FROM users WHERE id = $1',
-        [userId]
-      );
-
-      return done(null, result.rows[0]);
+      const user = newUser.rows[0];
+      return done(null, { 
+        id: user.id, 
+        email: user.email,
+        full_name: user.full_name,
+        avatar_url: user.avatar_url,
+        provider: 'github',
+        userType: 'oauth' 
+      });
     } catch (error) {
       console.error('GitHub auth error:', error);
       return done(error, null);

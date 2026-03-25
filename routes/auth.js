@@ -4,29 +4,35 @@ const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const { body, validationResult } = require('express-validator');
 const pool = require('../config/db');
+const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
-// Регистрация через email/password
+// Регистрация
 router.post('/register', [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 6 })
 ], async (req, res) => {
+  const logger = req.logger?.child('auth.register') || console;
+  
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      logger.warn('Validation failed', { errors: errors.array() });
       return res.status(400).json({ errors: errors.array() });
     }
 
     const { email, password } = req.body;
 
-    // Проверяем только в таблице users (email/password пользователи)
+    logger.debug('Checking existing user', { email });
+
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1',
       [email]
     );
 
     if (existingUser.rows.length > 0) {
+      logger.warn('User already exists', { email });
       return res.status(400).json({ error: 'User already exists' });
     }
 
@@ -40,36 +46,38 @@ router.post('/register', [
 
     const user = result.rows[0];
     const token = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email,
-        userType: 'user' 
-      },
+      { userId: user.id, email: user.email, userType: 'user' },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({ 
-      user: { 
-        ...user, 
-        userType: 'user' 
-      }, 
-      token,
-      userType: 'user' 
+    logger.info('User registered successfully', { 
+      userId: user.id,
+      email: user.email 
     });
+
+    res.json({ user, token });
   } catch (error) {
-    console.error(error);
+    logger.error('Registration error', { 
+      error: error.message,
+      stack: error.stack,
+      critical: true
+    });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Вход через email/password
+// Вход
 router.post('/login', [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
 ], async (req, res) => {
+  const logger = req.logger?.child('auth.login') || console;
+  
   try {
     const { email, password } = req.body;
+
+    logger.debug('Attempting login', { email });
 
     const result = await pool.query(
       'SELECT id, email, password_hash FROM users WHERE email = $1',
@@ -77,6 +85,7 @@ router.post('/login', [
     );
 
     if (result.rows.length === 0) {
+      logger.warn('Login failed - user not found', { email });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -84,36 +93,39 @@ router.post('/login', [
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
     if (!isValidPassword) {
+      logger.warn('Login failed - invalid password', { userId: user.id });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const token = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email,
-        userType: 'user' 
-      },
+      { userId: user.id, email: user.email, userType: 'user' },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
+    logger.info('User logged in successfully', { 
+      userId: user.id,
+      email: user.email 
+    });
+
     res.json({ 
-      user: { 
-        id: user.id, 
-        email: user.email,
-        userType: 'user' 
-      }, 
-      token,
-      userType: 'user' 
+      user: { id: user.id, email: user.email, userType: 'user' },
+      token 
     });
   } catch (error) {
-    console.error(error);
+    logger.error('Login error', { 
+      error: error.message,
+      stack: error.stack,
+      critical: true
+    });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Получение текущего пользователя
-router.get('/me', require('../middleware/auth'), async (req, res) => {
+router.get('/me', authMiddleware, async (req, res) => {
+  const logger = req.logger?.child('auth.me') || console;
+  
   try {
     const { userType, userId } = req.user;
     
@@ -124,9 +136,11 @@ router.get('/me', require('../middleware/auth'), async (req, res) => {
       );
 
       if (result.rows.length === 0) {
+        logger.warn('User not found', { userId, userType });
         return res.status(404).json({ error: 'User not found' });
       }
 
+      logger.info('User data retrieved', { userId, userType });
       res.json({ 
         user: { 
           ...result.rows[0], 
@@ -142,9 +156,11 @@ router.get('/me', require('../middleware/auth'), async (req, res) => {
       );
 
       if (result.rows.length === 0) {
+        logger.warn('OAuth user not found', { userId, userType });
         return res.status(404).json({ error: 'User not found' });
       }
 
+      logger.info('OAuth user data retrieved', { userId, userType });
       res.json({ 
         user: { 
           ...result.rows[0], 
@@ -153,7 +169,13 @@ router.get('/me', require('../middleware/auth'), async (req, res) => {
       });
     }
   } catch (error) {
-    console.error(error);
+    logger.error('Failed to fetch user data', { 
+      error: error.message,
+      stack: error.stack,
+      critical: true,
+      userId: req.user?.userId,
+      userType: req.user?.userType
+    });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -168,8 +190,10 @@ router.get('/github/callback',
     session: false 
   }),
   async (req, res) => {
+    const logger = req.logger?.child('auth.github') || console;
+    
     try {
-      console.log('GitHub callback успешен, пользователь:', req.user);
+      logger.info('GitHub callback successful', { user: req.user });
       
       const token = jwt.sign(
         { 
@@ -181,16 +205,69 @@ router.get('/github/callback',
         { expiresIn: '7d' }
       );
 
-      console.log('JWT токен сгенерирован для oauth пользователя:', req.user.id);
+      logger.info('JWT token generated for oauth user', { userId: req.user.id });
       
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       res.redirect(`${frontendUrl}/auth/callback?token=${token}&userType=oauth`);
     } catch (error) {
-      console.error('GitHub callback error:', error);
+      logger.error('GitHub callback error', { 
+        error: error.message,
+        stack: error.stack,
+        critical: true
+      });
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       res.redirect(`${frontendUrl}/login?error=server_error`);
     }
   }
 );
+
+// Получение информации о GitHub аккаунте
+router.get('/github/user/:userId', async (req, res) => {
+  const logger = req.logger?.child('auth.github.user') || console;
+  
+  try {
+    const result = await pool.query(
+      `SELECT provider_data FROM user_providers 
+       WHERE user_id = $1 AND provider = 'github'`,
+      [req.params.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ connected: false });
+    }
+
+    res.json({ 
+      connected: true,
+      data: result.rows[0].provider_data 
+    });
+  } catch (error) {
+    logger.error('Error fetching GitHub user', { 
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: 'Failed to fetch GitHub info' });
+  }
+});
+
+// Отключение GitHub аккаунта
+router.delete('/github/:userId', async (req, res) => {
+  const logger = req.logger?.child('auth.github.disconnect') || console;
+  
+  try {
+    await pool.query(
+      `DELETE FROM user_providers 
+       WHERE user_id = $1 AND provider = 'github'`,
+      [req.params.userId]
+    );
+
+    res.json({ message: 'GitHub account disconnected' });
+  } catch (error) {
+    logger.error('Error disconnecting GitHub', { 
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: 'Failed to disconnect GitHub' });
+  }
+});
 
 module.exports = router;

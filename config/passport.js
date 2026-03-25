@@ -39,7 +39,6 @@ passport.use(new GitHubStrategy({
       const avatarUrl = profile.photos?.[0]?.value;
       const providerId = profile.id.toString();
 
-      // Проверяем существование пользователя в oauth_users
       const existingUser = await pool.query(
         `SELECT * FROM oauth_users 
          WHERE provider = 'github' AND provider_id = $1`,
@@ -47,7 +46,6 @@ passport.use(new GitHubStrategy({
       );
 
       if (existingUser.rows.length > 0) {
-        // Обновляем существующего пользователя
         await pool.query(
           `UPDATE oauth_users SET 
            full_name = COALESCE($1, full_name),
@@ -69,7 +67,6 @@ passport.use(new GitHubStrategy({
         });
       }
 
-      // Создаем нового пользователя в oauth_users
       const newUser = await pool.query(
         `INSERT INTO oauth_users 
          (provider, provider_id, email, full_name, avatar_url, provider_data) 

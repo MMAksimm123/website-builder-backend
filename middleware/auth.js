@@ -3,18 +3,22 @@ const jwt = require('jsonwebtoken');
 module.exports = (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
+    
     if (!token) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
     req.user = {
       userId: decoded.userId,
       email: decoded.email,
-      userType: decoded.userType
+      userType: decoded.userType || 'user'
     };
+    
     next();
   } catch (error) {
+    console.error('Auth error:', error.message);
     return res.status(401).json({ error: 'Invalid token' });
   }
 };

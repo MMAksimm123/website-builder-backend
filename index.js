@@ -9,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const projectRoutes = require('./routes/projects');
 const githubRoutes = require('./routes/github');
 const imageRoutes = require('./routes/images');
+const templateRoutes = require('./routes/templates');
 
 const app = express();
 const logger = createServiceLogger('main');
@@ -45,6 +46,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/images', imageRoutes);
+app.use('/api/templates', templateRoutes);
 
 // Тестовый маршрут
 app.get('/api/health', (req, res) => {

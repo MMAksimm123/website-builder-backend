@@ -44,7 +44,7 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// Получение проекта по ID
+// Получение проекта по ID (требует авторизации)
 router.get('/:id', auth, async (req, res) => {
   try {
     const { userType, userId } = req.user;
@@ -64,6 +64,35 @@ router.get('/:id', auth, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Публичный маршрут для просмотра проекта (без авторизации)
+router.get('/public/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('Public project requested:', id);
+    
+    const result = await pool.query(
+      `SELECT id, name, html, css, js, owner_type, owner_id, created_at, updated_at 
+       FROM user_projects 
+       WHERE id = $1`,
+      [id]
+    );
+    
+    console.log('Query result rows:', result.rows.length);
+    
+    if (result.rows.length === 0) {
+      console.log('Project not found:', id);
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    console.log('Public project sent:', result.rows[0].name);
+    res.json({ project: result.rows[0] });
+  } catch (error) {
+    console.error('Error fetching public project:', error);
+    res.status(500).json({ error: 'Failed to fetch project', details: error.message });
   }
 });
 
@@ -110,6 +139,33 @@ router.delete('/:id', auth, async (req, res) => {
     }
 
     res.json({ message: 'Project deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Сохранение GitHub настроек
+router.post('/:id/github', auth, async (req, res) => {
+  try {
+    const { repo, token } = req.body;
+    const { userType, userId } = req.user;
+
+    const result = await pool.query(
+      `UPDATE user_projects 
+       SET github_repo = $1, 
+           github_token = $2, 
+           github_last_sync = CURRENT_TIMESTAMP
+       WHERE id = $3 AND owner_type = $4 AND owner_id = $5
+       RETURNING id, github_repo, github_last_sync`,
+      [repo, token, req.params.id, userType, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    res.json({ github: result.rows[0] });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
